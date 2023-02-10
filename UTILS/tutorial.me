@@ -1,0 +1,295 @@
+1- Instância EC2 na AWS
+
+Nome: django-blog
+Chave: Ubuntu
+SO: Ubunto Server 18.04
+SG: django-blog, habilitar ipv6, liberando ssh(22), http(80) e https(443)
+
+2- Configurando o servidor
+~$ sudo apt-get update
+~$ sudo apt-get upgrade -y
+
+3-Instalando o Python e python-venv
+~$ sudo apt install python3.8 python3.8-dev python3.8-venv python3-venv gcc default-libmysqlclient-dev libssl-dev
+
+4-Instalando o docker para BD
+~$ sudo apt install docker.io
+~$ sudo usermod -aG docker $USER
+
+Sair e entrar novamente para liberar o docker sem necessidade de sudo
+
+5-Criando container para BD
+~$ sudo docker run --restart always -d --name mariadb -p 3306:3306 -e MYSQL_ROOT_PASSWORD='senhaforte' mariadb
+
+6-Conectando no container do banco de dados
+~$ docker exec -it mariadb bash
+~$ mysql -uroot -p
+senhaforte
+
+7-Criar base de dados e usuario
+> CREATE DATABASE blogdjango;
+> CREATE USER userdjango@'%' IDENTIFIED BY 'guaraguaranacapela';
+> GRANT ALL PRIVILEGES ON blogdjango.* TO userdjango@'%';
+> exit;
+# exit
+
+8-Clonar projeto do blog do git na pasta blog
+~$ git clone https://github.com/luizomf/blog-django-for-deploy.git blog
+cd blog
+
+9- Criar ambiente virtual
+~/blog$ python3.8 -m venv venv 
+~/blog$ . venv/bin/activate
+
+10- Instalando os requisitos
+~/blog$ pip install -r requirements.txt
+
+11-Dentro da pasta blog/blog esta o arquivo de configuração do projeto
+~/blog$ cd blog
+~/blog/blog$ cp local_settings_EXAMPLE.py local_settings.py
+
+12- Editar local_settings.py
+blog/blog$ nano local_settings.py
+
+a-Criar uma SECRET_KEY 
+https://miniwebtool.com/django-secret-key-generator/
+
+b-Testar com o runserver
+Comentar a linha summernotes no urls.py [informação disponivel no inicio do video]
+python manage.py loaddata db.json
+blog/$ python manage.py runserver
+
+
+13-Criação de socket guincorn ~ 25:00
+blog/$ sudo nano /etc/systemd/system/gunicorn_blog.socket
+---
+[Unit]
+Description=gunicorn blog socket
+
+[Socket]
+ListenStream=/run/gunicorn_blog.sock
+
+[Install]
+WantedBy=sockets.target
+---
+
+14-Criação de seriço guincorn
+
+/blog$ sudo nano /etc/systemd/system/gunicorn_blog.service
+
+[Unit]
+Description=gunicorn daemon
+Requires=gunicorn_blog.socket
+After=network.target
+---
+[Service]
+User=ubuntu
+Group=www-data
+WorkingDirectory=/home/ubuntu/blog
+ExecStart=/home/ubuntu/blog/venv/bin/gunicorn \
+          --access-logfile - \
+          --workers 3 \
+          --bind unix:/run/gunicorn_blog.sock \
+          blog.wsgi:application
+
+[Install]
+WantedBy=multi-user.target
+---
+15-Criação de seriço guincorn
+Iniciando o serviço
+~blog$ sudo systemctl start gunicorn_blog.socket
+~blog$ sudosystemctl enable gunicorn_blog.socket
+
+
+
+16-Route 53 [AL]
+a-Criar zona hospedada
+No nome do dominio colocar o dominio do freenom: lobianco.tk
+Zona pública
+b-Criar registro tipo A e tipo AAAA
+ir em zonas hospedadas->lobianco.tk
+criar registro->Roteamento simples->definir registro simples->tipo de registro A e colocar o ipv4 da instancia.
+fazer o mesmo para AAAA com o endereço ipv6
+
+
+
+
+17-freenom [AL]
+No freenom colocar os servidores de nome gerados no route 53
+Nameservers->Use custom nameservers (enter below)
+
+
+18-http ~ 32:00
+sudo openssl dhparam -out /etc/ssl/certs/dhparam.pem 2048
+sudo apt install certbot
+sudo certbot certonly --standalone -d lobianco.tk
+
+ - Congratulations! Your certificate and chain have been saved at:
+   /etc/letsencrypt/live/lobianco.tk/fullchain.pem
+
+
+19-NGINX
+Incluir o ip e o dominio em ALLOWED_HOSTS no local_settings.py
+sudo apt install nginx
+
+a- para http
+sudo nano /etc/nginx/sites-enabled/lobinaco.tk
+---
+server {
+	listen 80;
+	listen [::]:80;
+
+	index index.html index.htm index.nginx-debian.html index.php;
+
+	server_name temp.lobinaco.tk;
+
+	location /static/ {
+		root /home/ubuntu/blog;
+	}
+
+	location /media {
+		alias /home/ubuntu/blog/media/;
+	}
+
+	location / {
+		include proxy_params;
+		proxy_pass http://unix:/run/gunicorn_blog.sock;
+	}
+
+	location ~ /\.ht {
+		deny all;
+	}
+
+	location ~ /\. {
+		access_log off;
+		log_not_found off;
+		deny all;
+	}
+
+	gzip on;
+	gzip_disable "msie6";
+
+	gzip_comp_level 6;
+	gzip_min_length 1100;
+	gzip_buffers 4 32k;
+	gzip_proxied any;
+	gzip_types
+		text/plain
+		text/css
+		text/js
+		text/xml
+		text/javascript
+		application/javascript
+		application/x-javascript
+		application/json
+		application/xml
+		application/rss+xml
+		image/svg+xml;
+
+	access_log off;
+	#access_log  /var/log/nginx/lobianco.tk-access.log;
+	error_log   /var/log/nginx/lobianco.tk-error.log;
+}
+=============
+=============
+=============
+b-para https
+
+
+
+sudo nano /etc/nginx/sites-enabled/lobinaco.tk
+---
+server {
+	listen 80;
+	listen [::]:80;
+
+	listen 443 ssl http2;
+	listen [::]:443 ssl http2;
+	ssl_certificate /etc/letsencrypt/live/lobianco.tk/fullchain.pem; # managed by Certbot
+	ssl_certificate_key /etc/letsencrypt/live/lobianco.tk/privkey.pem; # managed by Certbot
+	ssl_trusted_certificate /etc/letsencrypt/live/lobianco.tk/chain.pem;
+
+	# Improve HTTPS performance with session resumption
+	ssl_session_cache shared:SSL:10m;
+	ssl_session_timeout 5m;
+
+	# Enable server-side protection against BEAST attacks
+	ssl_prefer_server_ciphers on;
+	ssl_ciphers ECDH+AESGCM:ECDH+AES256:ECDH+AES128:DH+3DES:!ADH:!AECDH:!MD5;
+
+	# Disable SSLv3
+	ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
+
+	# Diffie-Hellman parameter for DHE ciphersuites
+	# $ sudo openssl dhparam -out /etc/ssl/certs/dhparam.pem 4096
+	ssl_dhparam /etc/ssl/certs/dhparam.pem;
+
+	# Enable HSTS (https://developer.mozilla.org/en-US/docs/Security/HTTP_Strict_Transport_Security)
+	add_header Strict-Transport-Security "max-age=63072000; includeSubdomains";
+
+	# Enable OCSP stapling (http://blog.mozilla.org/security/2013/07/29/ocsp-stapling-in-firefox)
+	ssl_stapling on;
+	ssl_stapling_verify on;
+	resolver 8.8.8.8 8.8.4.4 valid=300s;
+	resolver_timeout 5s;
+
+	# Add index.php to the list if you are using PHP
+	index index.html index.htm index.nginx-debian.html index.php;
+
+	server_name lobianco.tk;
+
+	location = /favicon.ico { access_log off; log_not_found off; }
+	location /static/ {
+		root /home/ubuntu/blog;
+	}
+
+	location /media {
+		alias /home/ubuntu/blog/media/;
+	}
+
+	location / {
+		include proxy_params;
+		proxy_pass http://unix:/run/gunicorn_blog.sock;
+	}
+
+	# deny access to .htaccess files, if Apache's document root
+	# concurs with nginx's one
+	#
+	location ~ /\.ht {
+		deny all;
+	}
+
+	location ~ /\. {
+		access_log off;
+		log_not_found off;
+		deny all;
+	}
+
+	gzip on;
+	gzip_disable "msie6";
+
+	gzip_comp_level 6;
+	gzip_min_length 1100;
+	gzip_buffers 4 32k;
+	gzip_proxied any;
+	gzip_types
+		text/plain
+		text/css
+		text/js
+		text/xml
+		text/javascript
+		application/javascript
+		application/x-javascript
+		application/json
+		application/xml
+		application/rss+xml
+		image/svg+xml;
+
+	  access_log off;
+	#access_log  /var/log/nginx/lobianco.tk-access.log;
+	error_log   /var/log/nginx/lobianco.tk-error.log;
+}
+---
+
+Referencias:
+https://www.youtube.com/watch?v=NkfEn3IroYU
